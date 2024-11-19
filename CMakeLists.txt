@@ -208,7 +208,7 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
 
   FetchContent_Declare(
         cutlass
-        GIT_REPOSITORY https://github.com/nvidia/cutlass.git
+        GIT_REPOSITORY /lpai/cutlass
         GIT_TAG v3.5.1
         GIT_PROGRESS TRUE
 
@@ -508,7 +508,7 @@ if(VLLM_FLASH_ATTN_SRC_DIR)
 else()
   FetchContent_Declare(
           vllm-flash-attn
-          GIT_REPOSITORY https://github.com/vllm-project/flash-attention.git
+          GIT_REPOSITORY /lpai/flash-attention
           GIT_TAG 5259c586c403a4e4d8bf69973c159b40cc346fb9
           GIT_PROGRESS TRUE
           # Don't share the vllm-flash-attn build between build types

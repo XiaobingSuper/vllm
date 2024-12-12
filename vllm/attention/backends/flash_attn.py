@@ -391,6 +391,7 @@ class FlashAttentionMetadataBuilder(
         self.runner = input_builder.runner
         self.sliding_window = input_builder.sliding_window
         self.block_size = input_builder.block_size
+        self.model_config = input_builder.model_config
 
     def _add_seq_group(
             self, inter_data: "ModelInputForGPUBuilder.InterDataForSeqGroup",
@@ -450,7 +451,8 @@ class FlashAttentionMetadataBuilder(
                                                        self.sliding_window)
             compute_slot_mapping(is_profile_run, self.slot_mapping, seq_id,
                                  seq_len, context_len, start_idx,
-                                 self.block_size, inter_data.block_tables)
+                                 self.block_size, inter_data.block_tables,
+                                 self.model_config)
 
     def _get_graph_runner_block_tables(
             self, num_seqs: int,

@@ -128,6 +128,8 @@ class ModelConfig:
             can not be gathered from the vllm arguments.
         override_pooling_config: Initialize non default pooling config or
             override default pooling config for the embedding model.
+        use_attention_sinks: If True, allow the model to use attention sinks
+            and exceed its context length during decoding.   
     """
 
     def __init__(
@@ -161,7 +163,8 @@ class ModelConfig:
             hf_overrides: Optional[HfOverrides] = None,
             mm_processor_kwargs: Optional[Dict[str, Any]] = None,
             override_neuron_config: Optional[Dict[str, Any]] = None,
-            override_pooler_config: Optional["PoolerConfig"] = None) -> None:
+            override_pooler_config: Optional["PoolerConfig"] = None,
+            use_attention_sinks: bool = False) -> None:
         self.model = model
         self.tokenizer = tokenizer
         self.tokenizer_mode = tokenizer_mode
@@ -251,6 +254,7 @@ class ModelConfig:
                                                        served_model_name)
         self.multimodal_config = self._init_multimodal_config(
             limit_mm_per_prompt)
+        self.use_attention_sinks = use_attention_sinks
         if not self.skip_tokenizer_init:
             self._verify_tokenizer_mode()
 
@@ -722,6 +726,7 @@ class CacheConfig:
         sliding_window: Optional[int] = None,
         enable_prefix_caching: bool = False,
         cpu_offload_gb: float = 0,
+        use_attention_sinks: bool = False,
     ) -> None:
         self.block_size = block_size
         self.gpu_memory_utilization = gpu_memory_utilization
@@ -732,6 +737,7 @@ class CacheConfig:
         self.sliding_window = sliding_window
         self.enable_prefix_caching = enable_prefix_caching
         self.cpu_offload_gb = cpu_offload_gb
+        self.use_attention_sinks = use_attention_sinks
 
         self._verify_args()
         self._verify_cache_dtype()

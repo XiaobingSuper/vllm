@@ -108,7 +108,8 @@ class BlockTable:
     def append_token_ids(self,
                          token_ids: List[int],
                          num_lookahead_slots: int = 0,
-                         num_computed_slots: Optional[int] = None) -> None:
+                         num_computed_slots: Optional[int] = None,
+                         max_blocks: Optional[int] = None) -> None:
         """Appends a sequence of token IDs to the existing blocks in the
         BlockTable.
 
@@ -146,21 +147,48 @@ class BlockTable:
                     self._allocator.free(b)
                     self._blocks[idx] = null_block
 
+        # works for attention sink
+        # if max_blocks is not None and first_block_idx >= max_blocks:
+        #     # If the last block has no free slots and need allocate a new block
+        #     # we need to free some blocks
+        #     if self._num_empty_slots < len(token_ids) + num_lookahead_slots and len(self._blocks)  == max_blocks:
+        #         self._allocator.free(self._blocks[1])
+        #         self._blocks = BlockList([self._blocks[0]] + self._blocks[2:])
+        #         self._num_full_slots -= self._block_size
+        #         first_block_idx -= 1
+        # seqlen =self._num_full_slots + len(token_ids) + num_lookahead_slots
+        # if max_blocks is not None and seqlen > max_blocks * self._block_size:
+        #     if seqlen % self._block_size == 1:
+        #         # if need to allocate a new block and added block is greater than max_blocks
+        #         # we need to free some blocks.
+        #         if len(self._blocks) == max_blocks:
+        #             # assert len(self._blocks) == max_blocks
+        #             self._allocator.free(self._blocks[1])
+        #             self._blocks = BlockList([self._blocks[0]] + self._blocks[2:])
+        #             self._num_full_slots -= self._block_size
+        #     else:
+        #         # last block still has space, do nothing
+        #         pass
+        # first_block_idx = self._num_full_slots // self._block_size
         # Ensure there are enough empty slots for the new tokens plus
         # lookahead slots
         self.ensure_num_empty_slots(num_empty_slots=len(token_ids) +
                                     num_lookahead_slots)
 
+        if max_blocks is not None:
+            while len(self._blocks) > max_blocks:
+                self._allocator.free(self._blocks[1])
+                self._blocks = BlockList([self._blocks[0]] + self._blocks[2:])
+                self._num_full_slots -= self._block_size
         # Update the blocks with the new tokens
         first_block_idx = self._num_full_slots // self._block_size
         token_blocks = self._chunk_token_blocks_for_append(token_ids)
-
         for i, token_block in enumerate(token_blocks):
             self._blocks.append_token_ids(first_block_idx + i, token_block)
 
         self._num_full_slots += len(token_ids)
 
-    def ensure_num_empty_slots(self, num_empty_slots: int) -> None:
+    def ensure_num_empty_slots(self, num_empty_slots: int, attension_sink=False, max_block=None) -> None:
         """Ensures that the BlockTable has at least the specified number of
         empty slots available.
 

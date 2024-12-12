@@ -321,6 +321,7 @@ class FlashInferMetadata(AttentionMetadata):
     q_data_type: torch.dtype = None
     device: torch.device = torch.device("cuda")
     is_profile_run: bool = False
+    
 
     def __post_init__(self):
         # Refer to
@@ -505,6 +506,8 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         self.paged_kv_last_page_len: List[int] = []
         self.total_blocks = 0
         self.is_profile_run: bool = False
+        self.model_config = input_builder.model_config
+        
 
     def _add_seq_group(
             self, inter_data: "ModelInputForGPUBuilder.InterDataForSeqGroup",
@@ -561,7 +564,8 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
                                                        self.sliding_window)
             compute_slot_mapping(is_profile_run, self.slot_mapping, seq_id,
                                  seq_len, context_len, start_idx,
-                                 self.block_size, inter_data.block_tables)
+                                 self.block_size, inter_data.block_tables,
+                                 self.model_config)
 
             # It is not necessary to add paged_kv_indices, paged_kv_indptr,
             # and paged_kv_last_page_len for profile run because we will

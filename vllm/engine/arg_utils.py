@@ -161,6 +161,7 @@ class EngineArgs:
     model_loader_extra_config: Optional[dict] = None
     ignore_patterns: Optional[Union[str, List[str]]] = None
     preemption_mode: Optional[str] = None
+    use_attention_sinks: bool = False
 
     scheduler_delay_factor: float = 0.0
     enable_chunked_prefill: Optional[bool] = None
@@ -621,6 +622,20 @@ class EngineArgs:
                   'Enabling this will use the fully sharded layers. '
                   'At high sequence length, max rank or '
                   'tensor parallel size, this is likely faster.'))
+        parser.add_argument(
+            "--device",
+            type=str,
+            default=EngineArgs.device,
+            choices=["auto", "cuda", "neuron", "cpu", 
+                     "openvino", "tpu", "xpu"],
+            help='Device type for vLLM execution.')
+        parser.add_argument(
+            "--use-attention-sinks",
+            type=bool,
+            action="store_true",
+            help=("If True, allow the model to use "
+                  "attention sinks and exceed its context "
+                  "length during decoding."))
         parser.add_argument('--enable-prompt-adapter',
                             action='store_true',
                             help='If True, enable handling of PromptAdapters.')
@@ -910,6 +925,7 @@ class EngineArgs:
             mm_processor_kwargs=self.mm_processor_kwargs,
             override_neuron_config=self.override_neuron_config,
             override_pooler_config=self.override_pooler_config,
+            use_attention_sinks=self.use_attention_sinks
         )
 
     def create_load_config(self) -> LoadConfig:
@@ -967,6 +983,7 @@ class EngineArgs:
             sliding_window=model_config.get_sliding_window(),
             enable_prefix_caching=self.enable_prefix_caching,
             cpu_offload_gb=self.cpu_offload_gb,
+            use_attention_sinks=self.use_attention_sinks,
         )
         parallel_config = ParallelConfig(
             pipeline_parallel_size=self.pipeline_parallel_size,
@@ -1129,7 +1146,15 @@ class EngineArgs:
             collect_model_execute_time="worker" in detailed_trace_modules
             or "all" in detailed_trace_modules,
         )
-
+        if model_config.get_sliding_window() is not None:
+            if (scheduler_config.chunked_prefill_enabled and not self.use_v2_block_manager):
+                raise ValueError(
+                    "Chunked prefill is not supported with sliding window. "
+                    "Set --disable-sliding-window to disable sliding window.")
+            if model_config.use_attention_sinks:
+                raise ValueError(
+                    "Attention sinks are not supported with sliding window. "
+                    "Set --disable-sliding-window to disable sliding window.")
         return VllmConfig(
             model_config=model_config,
             cache_config=cache_config,

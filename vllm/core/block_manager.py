@@ -65,6 +65,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         watermark: float = 0.01,
         sliding_window: Optional[int] = None,
         enable_caching: bool = False,
+        attn_sink_context_len: Optional[int] = None,
     ) -> None:
         self.block_size = block_size
         self.num_total_gpu_blocks = num_gpu_blocks
@@ -87,6 +88,10 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         assert watermark >= 0.0
 
         self.enable_caching = enable_caching
+        if attn_sink_context_len:
+            self.max_blocks = attn_sink_context_len // block_size
+        else:
+            self.max_blocks = None
 
         self.watermark_blocks = int(watermark * num_gpu_blocks)
 
@@ -235,11 +240,12 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
     ) -> List[Tuple[int, int]]:
 
         block_table = self.block_tables[seq.seq_id]
-
+            
         block_table.append_token_ids(
             token_ids=block_table.get_unseen_token_ids(seq.get_token_ids()),
             num_lookahead_slots=num_lookahead_slots,
             num_computed_slots=seq.data.get_num_computed_tokens(),
+            max_blocks = self.max_blocks,
         )
         # Return any new copy-on-writes.
         new_cows = self.block_allocator.clear_copy_on_writes()

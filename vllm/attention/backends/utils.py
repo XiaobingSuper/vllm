@@ -5,6 +5,7 @@ from itertools import accumulate
 from typing import TYPE_CHECKING, Any, Dict, List, Tuple, Type, TypeVar, Union
 
 import numpy as np
+import math
 import torch
 
 from vllm.attention import (AttentionMetadata, AttentionMetadataBuilder,
@@ -12,6 +13,7 @@ from vllm.attention import (AttentionMetadata, AttentionMetadataBuilder,
 from vllm.attention.backends.abstract import AttentionType
 from vllm.multimodal import MultiModalPlaceholderMap
 from vllm.utils import async_tensor_h2d, make_tensor_with_pad
+from vllm.config import ModelConfig
 
 if TYPE_CHECKING:
     from vllm.worker.model_runner_base import ModelRunnerBase
@@ -78,7 +80,8 @@ def _compute_slot_mapping_numpy(slot_mapping: List[int],
 def compute_slot_mapping(is_profile_run: bool, slot_mapping: List[int],
                          seq_id: int, seq_len: int, context_len: int,
                          start_idx: int, block_size: int,
-                         block_tables: Dict[int, List[int]]):
+                         block_tables: Dict[int, List[int]],
+                         model_config: ModelConfig):
     """
     Compute slot mapping.
     """
@@ -103,10 +106,26 @@ def compute_slot_mapping(is_profile_run: bool, slot_mapping: List[int],
     range_end = seq_len
     numel = range_end - range_start
     block_table = block_tables[seq_id]
+    max_model_len = model_config.max_model_len
+    # num_evicted_tokens = ((seq_len - max_model_len - 1)
+    #                         // block_size + 1) * block_size
+    
+    # num_evicted_tokens = 0
+    max_blocks = max_model_len // block_size
+    if model_config.use_attention_sinks and seq_len > max_blocks * block_size:
+        # if seq_len / block_size > max_blocks:
+        #     num_evicted_tokens = (seq_len // block_size - max_blocks) * block_size
+        #     range_start -= num_evicted_tokens
+        #     range_end -= num_evicted_tokens
+        num_evicted_tokens = (math.ceil(seq_len / block_size) - max_blocks) * block_size
+        range_start -= num_evicted_tokens
+        range_end -= num_evicted_tokens
+        
+        
 
     # numpy implementation will be faster than python if we have
     # many elements, otherwise it will be slower.
-    if numel < _COMPUTE_SLOT_MAPPING_NUMPY_NUMEL:
+    if numel < _COMPUTE_SLOT_MAPPING_NUMPY_NUMEL or model_config.use_attention_sinks:
         _compute_slot_mapping_python(slot_mapping, block_table, range_start,
                                      range_end, block_size)
     else:
@@ -139,6 +158,7 @@ class CommonMetadataBuilder(AttentionMetadataBuilder[TAttentionMetadata]):
 
         self.sliding_window = input_builder.sliding_window
         self.block_size = input_builder.block_size
+        self.model_config = input_builder.model_config
 
     def _add_seq_group(
             self, inter_data: "ModelInputForGPUBuilder.InterDataForSeqGroup",
@@ -193,7 +213,7 @@ class CommonMetadataBuilder(AttentionMetadataBuilder[TAttentionMetadata]):
                                                        self.sliding_window)
             compute_slot_mapping(is_profile_run, self.slot_mapping, seq_id,
                                  seq_len, context_len, start_idx,
-                                 self.block_size, inter_data.block_tables)
+                                 self.block_size, inter_data.block_tables, self.model_config)
 
     def build(self, seq_lens: List[int], query_lens: List[int],
               cuda_graph_pad_size: int, batch_size: int):

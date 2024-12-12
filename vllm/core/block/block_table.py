@@ -53,6 +53,7 @@ class BlockTable:
 
         self._max_block_sliding_window = max_block_sliding_window
         self._num_full_slots = self._get_num_token_ids()
+        self._evict_block = 0
 
     @staticmethod
     def get_num_required_blocks(token_ids: List[int],
@@ -175,13 +176,17 @@ class BlockTable:
         self.ensure_num_empty_slots(num_empty_slots=len(token_ids) +
                                     num_lookahead_slots)
 
+        first_block_idx = self._num_full_slots // self._block_size
         if max_blocks is not None:
+            if first_block_idx >= max_blocks:
+                first_block_idx = max_blocks - 1
             while len(self._blocks) > max_blocks:
                 self._allocator.free(self._blocks[1])
                 self._blocks = BlockList([self._blocks[0]] + self._blocks[2:])
-                self._num_full_slots -= self._block_size
+                self._evict_block += 1
+                # self._num_full_slots -= self._block_size
         # Update the blocks with the new tokens
-        first_block_idx = self._num_full_slots // self._block_size
+
         token_blocks = self._chunk_token_blocks_for_append(token_ids)
         for i, token_block in enumerate(token_blocks):
             self._blocks.append_token_ids(first_block_idx + i, token_block)
@@ -349,7 +354,7 @@ class BlockTable:
     @property
     def _num_empty_slots(self) -> int:
         assert self._is_allocated
-        return len(self._blocks) * self._block_size - self._num_full_slots
+        return len(self._blocks) * self._block_size - (self._num_full_slots - self._evict_block*self._block_size)
 
     @property
     def num_full_slots(self) -> int:

@@ -190,9 +190,10 @@ class StreamingAttentionSink(nn.Module):
                 continue
 
             block_table = block_tables_tensor[i]
+            max_blocks = model_context_len // block_size
             num_blocks = min(
                 num_past_tokens // block_size + 1,
-                model_context_len // block_size
+                max_blocks
             )
             # get first num_blocks in case of block table padding
             if num_blocks < len(block_table):
@@ -209,7 +210,7 @@ class StreamingAttentionSink(nn.Module):
             #     rem = num_past_tokens % block_size
             #     attn_metadata.seq_lens_tensor[i] = model_context_len - block_size + rem + 1
             #     self.positions[i] = model_context_len - block_size + rem
-            max_blocks = model_context_len // block_size
+
             if (num_past_tokens + 1) > max_blocks * block_size and attn_metadata.seq_lens[i] > max_blocks * block_size:
                 # if (num_past_tokens + 1) % block_size == 1 and len(block_table) == max_blocks:
                 #     attn_metadata.seq_lens_tensor[i] -=  block_size
@@ -220,7 +221,7 @@ class StreamingAttentionSink(nn.Module):
                     num_evicted_tokens = (math.ceil((num_past_tokens + 1) / block_size) - max_blocks) * block_size
                     attn_metadata.seq_lens_tensor[i] -= num_evicted_tokens
                     attn_metadata.seq_lens[i] -= num_evicted_tokens
-                    self.positions[i] -= (num_evicted_tokens -1)
+                    self.positions[i] = attn_metadata.seq_lens[i] - 1
                     
 
         if len(all_block_table) > 0:
@@ -325,11 +326,21 @@ class StreamingAttentionSink(nn.Module):
 
         for i in range(batch_size):
             num_past_tokens = attn_metadata.context_lens_tensor[i]
-            if num_past_tokens < self.model_context_len: continue
+            # if num_past_tokens < self.model_context_len: continue
 
-            # cap number of tokens to consider with model context len
-            rem = num_past_tokens % self.block_size
-            attn_metadata.seq_lens_tensor[i] = self.model_context_len - self.block_size + rem + 1
+            # # cap number of tokens to consider with model context len
+            # rem = num_past_tokens % self.block_size
+            # attn_metadata.seq_lens_tensor[i] = self.model_context_len - self.block_size + rem + 1
+            model_context_len = self.model_context_len
+            block_size = self.block_size
+            max_blocks = model_context_len // block_size
+            if (num_past_tokens + 1) > max_blocks * block_size and attn_metadata.seq_lens[i] > max_blocks * block_size:
+                if attn_metadata.seq_lens[i] == num_past_tokens + 1:
+                    # num_evicted_tokens = ((num_past_tokens + 1) // block_size - max_blocks) * block_size
+                    num_evicted_tokens = (math.ceil((num_past_tokens + 1) / block_size) - max_blocks) * block_size
+                    attn_metadata.seq_lens_tensor[i] -= num_evicted_tokens
+                    attn_metadata.seq_lens[i] -= num_evicted_tokens
+                    # self.positions[i] -= (num_evicted_tokens -1)
 
         # compute attention in kernel
         attn_output = self.attn(q, k, v, kv_cache, attn_metadata)

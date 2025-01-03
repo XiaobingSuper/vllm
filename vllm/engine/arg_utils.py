@@ -189,6 +189,11 @@ class EngineArgs:
 
     override_neuron_config: Optional[Dict[str, Any]] = None
     override_pooler_config: Optional[PoolerConfig] = None
+    
+    
+    max_prefill_cache_size: Optional[int] = None
+    compress_ratio: Optional[float] = None
+    obs_window_size: Optional[int] = None
 
     def __post_init__(self):
         if not self.tokenizer:
@@ -967,6 +972,9 @@ class EngineArgs:
             sliding_window=model_config.get_sliding_window(),
             enable_prefix_caching=self.enable_prefix_caching,
             cpu_offload_gb=self.cpu_offload_gb,
+            max_prefill_cache_size=self.max_prefill_cache_size,
+            compress_ratio=self.compress_ratio,
+            obs_window_size= self.obs_window_size,
         )
         parallel_config = ParallelConfig(
             pipeline_parallel_size=self.pipeline_parallel_size,

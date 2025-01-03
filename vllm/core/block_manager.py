@@ -65,6 +65,9 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         watermark: float = 0.01,
         sliding_window: Optional[int] = None,
         enable_caching: bool = False,
+        max_prefill_cache_size: Optional[int] = None,
+        compress_ratio: Optional[float] = None,
+        obs_window_size: Optional[int] = None,
     ) -> None:
         self.block_size = block_size
         self.num_total_gpu_blocks = num_gpu_blocks
@@ -104,10 +107,15 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             self.block_allocator)
         self._last_access_blocks_tracker = LastAccessBlocksTracker(
             self.block_allocator)
+        
+        self.max_prefill_cache_size = max_prefill_cache_size
+        self.compress_ratio = compress_ratio
+        self.obs_window_size = obs_window_size
 
     def can_allocate(self,
                      seq_group: SequenceGroup,
-                     num_lookahead_slots: int = 0) -> AllocStatus:
+                     num_lookahead_slots: int = 0,
+                     ) -> AllocStatus:
         # FIXME(woosuk): Here we assume that all sequences in the group share
         # the same prompt. This may not be true for preempted sequences.
 
@@ -118,6 +126,9 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             seq.get_token_ids(),
             block_size=self.block_size,
             num_lookahead_slots=num_lookahead_slots,
+            max_prefill_cache_size=self.max_prefill_cache_size,
+            compress_ratio=self.compress_ratio,
+            obs_window_size=self.obs_window_size,
         )
 
         if seq_group.is_encoder_decoder():
@@ -145,14 +156,18 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             return AllocStatus.LATER
 
     def _allocate_sequence(self, seq: Sequence) -> BlockTable:
+        print("Allocating sequence")
         block_table = BlockTable(
             block_size=self.block_size,
             block_allocator=self.block_allocator,
             max_block_sliding_window=self.max_block_sliding_window,
+            max_prefill_cache_size=self.max_prefill_cache_size,
+            compress_ratio=self.compress_ratio,
+            obs_window_size=self.obs_window_size,
         )
         if seq.get_token_ids():
             # Add blocks to the block table only if the sequence is non empty.
-            block_table.allocate(seq.get_token_ids())
+            block_table.allocate(seq.get_token_ids(), is_prefill=seq.is_prefill())
 
         return block_table
 

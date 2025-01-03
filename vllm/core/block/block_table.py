@@ -44,6 +44,9 @@ class BlockTable:
         block_allocator: DeviceAwareBlockAllocator,
         _blocks: Optional[List[Block]] = None,
         max_block_sliding_window: Optional[int] = None,
+        max_prefill_cache_size: Optional[int] = None,
+        compress_ratio: Optional[float] = None,
+        obs_window_size: Optional[int] = None,
     ):
         self._block_size = block_size
         self._allocator = block_allocator
@@ -53,11 +56,19 @@ class BlockTable:
 
         self._max_block_sliding_window = max_block_sliding_window
         self._num_full_slots = self._get_num_token_ids()
+        self.max_prefill_cache_size = max_prefill_cache_size
+        self.compress_ratio = compress_ratio
+        self.obs_window_size = obs_window_size
+        self.orig_token_ids = []
 
     @staticmethod
     def get_num_required_blocks(token_ids: List[int],
                                 block_size: int,
-                                num_lookahead_slots: int = 0) -> int:
+                                num_lookahead_slots: int = 0,
+                                max_prefill_cache_size: Optional[int]=None,
+                                compress_ratio: Optional[float]=None,
+                                obs_window_size: Optional[int]=None
+                                ) -> int:
         """Calculates the minimum number of blocks required to store a given
         sequence of token IDs along with any look-ahead slots that may be
         required (like in multi-step + chunked-prefill).
@@ -76,11 +87,21 @@ class BlockTable:
             int: The minimum number of blocks required to store the given
                 sequence of token IDs along with any required look-ahead slots.
         """
-        return cdiv(len(token_ids) + num_lookahead_slots, block_size)
+        token_len = len(token_ids)
+        if max_prefill_cache_size is not None:
+            # We can prefill the cache with the prefix of the sequence.
+            # This reduces the number of blocks required.
+            token_len = min(token_len - obs_window_size, max_prefill_cache_size) + obs_window_size
+        elif compress_ratio is not None:
+            # We can compress the sequence by the given ratio.
+            # This reduces the number of blocks required.
+            token_len = int((token_len - obs_window_size)* compress_ratio) + obs_window_size
+        return cdiv(token_len + num_lookahead_slots, block_size)
 
     def allocate(self,
                  token_ids: List[int],
-                 device: Device = Device.GPU) -> None:
+                 device: Device = Device.GPU, 
+                 is_prefill=False) -> None:
         """Allocates memory blocks for storing the given sequence of token IDs.
 
         This method allocates the required number of blocks to store the given
@@ -93,6 +114,15 @@ class BlockTable:
         """
         assert not self._is_allocated
         assert token_ids
+        if is_prefill and self.obs_window_size is not None:
+            self.orig_token_ids = token_ids
+            # snapkv cpmpress prefill cache
+            obs_token_ids = token_ids[-self.obs_window_size:]
+            if self.compress_ratio is not None:
+                compressed_len = int((len(obs_token_ids) - self.obs_window_size) * self.compress_ratio)
+                token_ids = token_ids[:compressed_len] + obs_token_ids
+            elif self.max_prefill_cache_size is not None:
+                token_ids = token_ids[:self.max_prefill_cache_size] + obs_token_ids
         blocks = self._allocate_blocks_for_token_ids(prev_block=None,
                                                      token_ids=token_ids,
                                                      device=device)

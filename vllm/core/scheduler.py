@@ -304,6 +304,9 @@ class Scheduler:
         lora_config: Optional[LoRAConfig],
         pipeline_parallel_size: int = 1,
         output_proc_callback: Optional[Callable] = None,
+        max_prefill_cache_size: Optional[int] = None,
+        compress_ratio: Optional[float] = None,
+        obs_window_size: Optional[int] = None,
     ) -> None:
         self.scheduler_config = scheduler_config
         self.cache_config = cache_config
@@ -334,7 +337,10 @@ class Scheduler:
             num_gpu_blocks=num_gpu_blocks,
             num_cpu_blocks=num_cpu_blocks,
             sliding_window=self.cache_config.sliding_window,
-            enable_caching=self.cache_config.enable_prefix_caching)
+            enable_caching=self.cache_config.enable_prefix_caching,
+            max_prefill_cache_size=max_prefill_cache_size,
+            compress_ratio=compress_ratio,
+            obs_window_size=obs_window_size,)
 
         # Sequence groups in the WAITING state.
         # Contain new prefill or preempted requests.
@@ -394,6 +400,11 @@ class Scheduler:
         # will be stopped during schedule() call and added to this stop list
         # for processing and deallocation by the free_finished_seq_groups()
         self._async_stopped: List[SequenceGroup] = []
+        
+        
+        self.max_prefill_cache_size = max_prefill_cache_size
+        self.compress_ratio = compress_ratio
+        self.obs_window_size = obs_window_size
 
     @property
     def next_cache_id(self):
@@ -890,6 +901,14 @@ class Scheduler:
                 assert num_new_tokens == num_prompt_tokens
 
             prompt_limit = self._get_prompt_limit(seq_group)
+            
+            if self.obs_window_size is not None:
+                assert self.obs_window_size < num_new_tokens
+            
+            if self.max_prefill_cache_size is not None:
+                num_new_tokens = min(num_new_tokens - self.obs_window_size, self.max_prefill_cache_size) + self.obs_window_size
+            elif self.compress_ratio is not None:
+                num_new_tokens = int((num_new_tokens -self.obs_window_size)  * self.compress_ratio) + self.obs_window_size
             if num_new_tokens > prompt_limit:
                 logger.warning(
                     "Input prompt (%d tokens) is too long"
@@ -1054,6 +1073,7 @@ class Scheduler:
 
         # There should be no prefill from running queue because this policy
         # doesn't allow chunked prefills.
+        print("chunked_prefill_enabled.........................")
         assert len(running_scheduled.prefill_seq_groups) == 0
         assert len(swapped_in.prefill_seq_groups) == 0
 

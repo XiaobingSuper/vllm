@@ -298,6 +298,21 @@ class LLMEngine:
             model_config.mm_processor_kwargs,
             model_config.pooler_config,
         )
+        # snapkv config
+        self.max_prefill_cache_size = cache_config.max_prefill_cache_size
+        self.compress_ratio = cache_config.compress_ratio
+        self.obs_window_size = cache_config.obs_window_size
+
+        #  only need to set one of the two
+        if self.max_prefill_cache_size is not None:
+            assert self.max_prefill_cache_size > 0 and self.compress_ratio is None, "snapkv max_prefill_cache_size must be greater than 0"
+        if self.compress_ratio is not None:
+            assert 1 >= self.compress_ratio > 0 and self.max_prefill_cache_size is None, "snapkv compress_ratio must be greater than 0 and less than 1"
+
+        if self.obs_window_size is not None:
+            assert self.obs_window_size > 0, "snapkv obs_window_size must be greater than 0"
+        
+
         # TODO(woosuk): Print more configs in debug mode.
         self.model_config = model_config
         self.cache_config = cache_config
@@ -423,7 +438,10 @@ class LLMEngine:
                 scheduler_config, cache_config, lora_config,
                 parallel_config.pipeline_parallel_size,
                 self.async_callbacks[v_id]
-                if model_config.use_async_output_proc else None)
+                if model_config.use_async_output_proc else None,
+                self.max_prefill_cache_size,
+                self.compress_ratio,
+                self.obs_window_size)
             for v_id in range(parallel_config.pipeline_parallel_size)
         ]
 

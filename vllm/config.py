@@ -722,6 +722,9 @@ class CacheConfig:
         sliding_window: Optional[int] = None,
         enable_prefix_caching: bool = False,
         cpu_offload_gb: float = 0,
+        max_prefill_cache_size: Optional[int] = None,
+        compress_ratio: Optional[float] = None,
+        obs_window_size: Optional[int] = None,
     ) -> None:
         self.block_size = block_size
         self.gpu_memory_utilization = gpu_memory_utilization
@@ -732,6 +735,9 @@ class CacheConfig:
         self.sliding_window = sliding_window
         self.enable_prefix_caching = enable_prefix_caching
         self.cpu_offload_gb = cpu_offload_gb
+        self.max_prefill_cache_size = max_prefill_cache_size
+        self.compress_ratio = compress_ratio
+        self.obs_window_size = obs_window_size
 
         self._verify_args()
         self._verify_cache_dtype()

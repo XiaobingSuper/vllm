@@ -18,6 +18,34 @@
 
 namespace vllm {
 
+// Activation kernels launch one block per token and stride it over the hidden
+// dim, so the grid is `num_tokens` blocks wide however much work a token
+// carries. At decode `num_tokens` is the batch size, which leaves most SMs
+// idle. Split a token's hidden dim over `gridDim.y` blocks instead, so the
+// launch scales with the device. Each element is still computed by exactly one
+// thread from the same inputs, so results are bit-identical; and once
+// `num_tokens` alone fills the device this returns the previous configuration
+// (`chunks == 1`), leaving large-batch launches untouched.
+struct ActivationLaunchConfig {
+  int threads;
+  int chunks;
+};
+
+inline ActivationLaunchConfig activation_launch_config(int64_t num_tokens,
+                                                       int work_per_token,
+                                                       int sm_count) {
+  if (num_tokens >= sm_count) {
+    return {std::min(work_per_token, 1024), 1};
+  }
+  // Smaller blocks, so a token's work spreads over more of them.
+  const int threads = std::max(std::min(work_per_token, 256), 64);
+  const int max_chunks = std::max(1, (work_per_token + threads - 1) / threads);
+  // Oversubscribe a little, capped so no block comes up empty.
+  const int wanted = static_cast<int>(
+      (static_cast<int64_t>(sm_count) * 4 + num_tokens - 1) / num_tokens);
+  return {threads, std::min(max_chunks, std::max(1, wanted))};
+}
+
 // `alpha` and `beta` are applied to opposite operands:
 //   - alpha lives INSIDE the activation (the activated half): the gated
 //     activation computes act_half * sigmoid(alpha * act_half).
@@ -125,7 +153,8 @@ __global__ void act_and_mul_kernel(
     pvec_t* out_vec = reinterpret_cast<pvec_t*>(out_ptr);
     const int num_vecs = d / 2 / pvec_t::NUM_ELTS;
 
-    for (int i = threadIdx.x; i < num_vecs; i += blockDim.x) {
+    for (int i = blockIdx.y * blockDim.x + threadIdx.x; i < num_vecs;
+         i += blockDim.x * gridDim.y) {
       pvec_t x, y;
       if constexpr (use_256b) {
         ld256(x, &x_vec[i]);
@@ -148,7 +177,8 @@ __global__ void act_and_mul_kernel(
     }
   } else {
     // Scalar fallback for unaligned data or small d
-    for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+    for (int64_t idx = blockIdx.y * blockDim.x + threadIdx.x; idx < d;
+         idx += blockDim.x * gridDim.y) {
       const scalar_t x = VLLM_LDG(&x_ptr[idx]);
       const scalar_t y = VLLM_LDG(&y_ptr[idx]);
       out_ptr[idx] = compute<scalar_t, ACT_FN, act_first, HAS_CLAMP>(
@@ -249,8 +279,8 @@ packed_gelu_tanh_kernel(const packed_t& val, const float /*alpha*/) {
   if (num_tokens == 0) {                                                       \
     return;                                                                    \
   }                                                                            \
-  dim3 grid(num_tokens);                                                       \
-  int cc_major = get_device_prop()->major;                                     \
+  cudaDeviceProp* dev_prop = get_device_prop();                                \
+  int cc_major = dev_prop->major;                                              \
   int support_vec =                                                            \
       (CUDA_VERSION >= 12090 && cc_major >= 10 && num_tokens > 128)            \
           ? vllm::VecTraits<true>::ARCH_MAX_VEC_SIZE                           \
@@ -261,7 +291,10 @@ packed_gelu_tanh_kernel(const packed_t& val, const float /*alpha*/) {
       input.get_device_index());                                               \
   const cudaStream_t stream = get_current_cuda_stream();                       \
   if (use_vec) {                                                               \
-    dim3 block(std::min(d / vec_size, 1024));                                  \
+    auto cfg = vllm::activation_launch_config(num_tokens, d / vec_size,        \
+                                              dev_prop->multiProcessorCount);  \
+    dim3 grid(num_tokens, cfg.chunks);                                         \
+    dim3 block(cfg.threads);                                                   \
     if (CUDA_VERSION >= 12090 && cc_major >= 10 && num_tokens > 128) {         \
       VLLM_STABLE_DISPATCH_FLOATING_TYPES(dtype, "act_and_mul_kernel", [&] {   \
         vllm::act_and_mul_kernel<                                              \
@@ -284,7 +317,10 @@ packed_gelu_tanh_kernel(const packed_t& val, const float /*alpha*/) {
       });                                                                      \
     }                                                                          \
   } else {                                                                     \
-    dim3 block(std::min(d, 1024));                                             \
+    auto cfg = vllm::activation_launch_config(num_tokens, d,                   \
+                                              dev_prop->multiProcessorCount);  \
+    dim3 grid(num_tokens, cfg.chunks);                                         \
+    dim3 block(cfg.threads);                                                   \
     VLLM_STABLE_DISPATCH_FLOATING_TYPES(dtype, "act_and_mul_kernel", [&] {     \
       vllm::act_and_mul_kernel<                                                \
           scalar_t, typename vllm::PackedTypeConverter<scalar_t>::Type,        \
@@ -376,7 +412,8 @@ __global__ void act_and_mul_kernel_with_param(
     pvec_t* out_vec = reinterpret_cast<pvec_t*>(out_ptr);
     const int num_vecs = d / 2 / pvec_t::NUM_ELTS;
 
-    for (int i = threadIdx.x; i < num_vecs; i += blockDim.x) {
+    for (int i = blockIdx.y * blockDim.x + threadIdx.x; i < num_vecs;
+         i += blockDim.x * gridDim.y) {
       pvec_t x, y;
       if constexpr (use_256b) {
         ld256(x, &x_vec[i]);
@@ -397,7 +434,8 @@ __global__ void act_and_mul_kernel_with_param(
     }
   } else {
     // Scalar fallback for unaligned data or small d
-    for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+    for (int64_t idx = blockIdx.y * blockDim.x + threadIdx.x; idx < d;
+         idx += blockDim.x * gridDim.y) {
       const scalar_t x = VLLM_LDG(&x_ptr[idx]);
       const scalar_t y = VLLM_LDG(&y_ptr[idx]);
       out_ptr[idx] = ACT_FN(x, param) * y;
@@ -955,8 +993,8 @@ __global__ void masked_activation_kernel(
   if (num_tokens == 0) {                                                       \
     return;                                                                    \
   }                                                                            \
-  dim3 grid(num_tokens);                                                       \
-  int cc_major = get_device_prop()->major;                                     \
+  cudaDeviceProp* dev_prop = get_device_prop();                                \
+  int cc_major = dev_prop->major;                                              \
   int support_vec =                                                            \
       (CUDA_VERSION >= 12090 && cc_major >= 10 && num_tokens > 128)            \
           ? vllm::VecTraits<true>::ARCH_MAX_VEC_SIZE                           \
@@ -967,7 +1005,10 @@ __global__ void masked_activation_kernel(
       input.get_device_index());                                               \
   const cudaStream_t stream = get_current_cuda_stream();                       \
   if (use_vec) {                                                               \
-    dim3 block(std::min(d / vec_size, 1024));                                  \
+    auto cfg = vllm::activation_launch_config(num_tokens, d / vec_size,        \
+                                              dev_prop->multiProcessorCount);  \
+    dim3 grid(num_tokens, cfg.chunks);                                         \
+    dim3 block(cfg.threads);                                                   \
     if (CUDA_VERSION >= 12090 && cc_major >= 10 && num_tokens > 128) {         \
       VLLM_STABLE_DISPATCH_FLOATING_TYPES(                                     \
           dtype, "act_and_mul_kernel_with_param", [&] {                        \
@@ -994,7 +1035,10 @@ __global__ void masked_activation_kernel(
           });                                                                  \
     }                                                                          \
   } else {                                                                     \
-    dim3 block(std::min(d, 1024));                                             \
+    auto cfg = vllm::activation_launch_config(num_tokens, d,                   \
+                                              dev_prop->multiProcessorCount);  \
+    dim3 grid(num_tokens, cfg.chunks);                                         \
+    dim3 block(cfg.threads);                                                   \
     VLLM_STABLE_DISPATCH_FLOATING_TYPES(                                       \
         dtype, "act_and_mul_kernel_with_param", [&] {                          \
           vllm::act_and_mul_kernel_with_param<                                 \
@@ -1321,7 +1365,8 @@ __global__ void activation_kernel(
     vec_t* out_vec = reinterpret_cast<vec_t*>(out_ptr);
     const int num_vecs = d / VEC_SIZE;
 
-    for (int i = threadIdx.x; i < num_vecs; i += blockDim.x) {
+    for (int i = blockIdx.y * blockDim.x + threadIdx.x; i < num_vecs;
+         i += blockDim.x * gridDim.y) {
       vec_t v;
       if constexpr (use_256b) {
         ld256(v, &in_vec[i]);
@@ -1341,7 +1386,8 @@ __global__ void activation_kernel(
     }
   } else {
     // Scalar fallback for unaligned data or small d
-    for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+    for (int64_t idx = blockIdx.y * blockDim.x + threadIdx.x; idx < d;
+         idx += blockDim.x * gridDim.y) {
       const scalar_t x = VLLM_LDG(&in_ptr[idx]);
       out_ptr[idx] = ACT_FN(x);
     }
@@ -1358,8 +1404,8 @@ __global__ void activation_kernel(
   if (num_tokens == 0) {                                                       \
     return;                                                                    \
   }                                                                            \
-  dim3 grid(num_tokens);                                                       \
-  int cc_major = get_device_prop()->major;                                     \
+  cudaDeviceProp* dev_prop = get_device_prop();                                \
+  int cc_major = dev_prop->major;                                              \
   int support_vec =                                                            \
       (CUDA_VERSION >= 12090 && cc_major >= 10 && num_tokens > 128)            \
           ? vllm::VecTraits<true>::ARCH_MAX_VEC_SIZE                           \
@@ -1370,7 +1416,10 @@ __global__ void activation_kernel(
       input.get_device_index());                                               \
   const cudaStream_t stream = get_current_cuda_stream();                       \
   if (use_vec) {                                                               \
-    dim3 block(std::min(d / vec_size, 1024));                                  \
+    auto cfg = vllm::activation_launch_config(num_tokens, d / vec_size,        \
+                                              dev_prop->multiProcessorCount);  \
+    dim3 grid(num_tokens, cfg.chunks);                                         \
+    dim3 block(cfg.threads);                                                   \
     if (CUDA_VERSION >= 12090 && cc_major >= 10 && num_tokens > 128) {         \
       VLLM_STABLE_DISPATCH_FLOATING_TYPES(dtype, "activation_kernel", [&] {    \
         vllm::activation_kernel<scalar_t, KERNEL<scalar_t>, true, true>        \
@@ -1385,7 +1434,10 @@ __global__ void activation_kernel(
       });                                                                      \
     }                                                                          \
   } else {                                                                     \
-    dim3 block(std::min(d, 1024));                                             \
+    auto cfg = vllm::activation_launch_config(num_tokens, d,                   \
+                                              dev_prop->multiProcessorCount);  \
+    dim3 grid(num_tokens, cfg.chunks);                                         \
+    dim3 block(cfg.threads);                                                   \
     VLLM_STABLE_DISPATCH_FLOATING_TYPES(dtype, "activation_kernel", [&] {      \
       vllm::activation_kernel<scalar_t, KERNEL<scalar_t>, false>               \
           <<<grid, block, 0, stream>>>(out.mutable_data_ptr<scalar_t>(),       \
